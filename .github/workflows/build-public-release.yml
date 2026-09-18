@@ -6,7 +6,14 @@ on:
       - main
     tags:
       - "v*"
+
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "Create/update GitHub Release from VERSION.txt"
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -17,10 +24,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
@@ -56,23 +63,25 @@ jobs:
       - name: Create release folder
         shell: powershell
         run: |
-          if (Test-Path release) {
-            Remove-Item release -Recurse -Force
+          if (Test-Path "release") {
+            Remove-Item "release" -Recurse -Force
           }
 
-          New-Item -ItemType Directory -Path release | Out-Null
-          New-Item -ItemType Directory -Path release\profiles | Out-Null
+          New-Item -ItemType Directory -Path "release" | Out-Null
+          New-Item -ItemType Directory -Path "release\profiles" | Out-Null
 
-          Copy-Item dist\APEX5_FH6_GUI.exe release\
-          Copy-Item dist\APEX5_FH6_Bridge.exe release\
+          Copy-Item "dist\APEX5_FH6_GUI.exe" "release\"
+          Copy-Item "dist\APEX5_FH6_Bridge.exe" "release\"
 
-          Copy-Item profiles\*.ini release\profiles\
+          Copy-Item "profiles\*.ini" "release\profiles\"
 
-          Copy-Item README.md release\
-          Copy-Item VERSION.txt release\
+          Copy-Item "README.md" "release\"
+          Copy-Item "VERSION.txt" "release\"
 
-          Write-Host "Release contents:"
-          Get-ChildItem release -Recurse
+          Write-Host ""
+          Write-Host "===== RELEASE CONTENTS ====="
+          Get-ChildItem "release" -Recurse
+          Write-Host "============================"
 
       - name: Install Inno Setup
         shell: powershell
@@ -96,28 +105,89 @@ jobs:
             throw "Inno Setup build failed."
           }
 
-          if (!(Test-Path "installer\APEX5_FH6_Bridge_Setup.exe")) {
-            throw "Installer was not created."
+          $installer = "installer\APEX5_FH6_Bridge_Setup.exe"
+
+          if (!(Test-Path $installer)) {
+            throw "Installer was not created: $installer"
           }
 
+          Write-Host ""
+          Write-Host "===== INSTALLER ====="
+          Get-Item $installer | Format-List FullName, Length, LastWriteTime
+          Write-Host "===================="
+
+      - name: Read version
+        shell: powershell
+        run: |
+          $content = Get-Content "VERSION.txt" -Raw
+
+          if ($content -notmatch '(\d+\.\d+\.\d+)') {
+            throw "Could not find semantic version in VERSION.txt"
+          }
+
+          $version = $Matches[1]
+          "APP_VERSION=$version" >> $env:GITHUB_ENV
+
+          Write-Host "Detected version: $version"
+
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: APEX5-FH6-Bridge-Windows
+          if-no-files-found: error
           path: |
-            release/
+            release/**
             installer/APEX5_FH6_Bridge_Setup.exe
 
-      - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Publish GitHub Release
+        if: >
+          startsWith(github.ref, 'refs/tags/v') ||
+          (
+            github.event_name == 'workflow_dispatch' &&
+            inputs.publish_release == true
+          )
         shell: powershell
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = "${env:GITHUB_REF_NAME}"
+          if ("${env:GITHUB_REF}" -like "refs/tags/v*") {
+            $tag = "${env:GITHUB_REF_NAME}"
+          }
+          else {
+            $tag = "v${env:APP_VERSION}"
+          }
 
-          gh release create $tag `
-            "installer\APEX5_FH6_Bridge_Setup.exe" `
-            --title "APEX 5 FH6 Bridge $tag" `
-            --generate-notes `
-            --target main
+          Write-Host "Release tag: $tag"
+
+          gh release view $tag *> $null
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Release does not exist. Creating it..."
+
+            gh release create $tag `
+              "installer\APEX5_FH6_Bridge_Setup.exe" `
+              --title "APEX 5 FH6 Bridge $tag" `
+              --generate-notes `
+              --latest `
+              --target main
+
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to create GitHub Release."
+            }
+          }
+          else {
+            Write-Host "Release already exists. Updating installer..."
+
+            gh release upload $tag `
+              "installer\APEX5_FH6_Bridge_Setup.exe" `
+              --clobber
+
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to upload installer to existing Release."
+            }
+          }
+
+          Write-Host ""
+          Write-Host "===== RELEASE READY ====="
+          gh release view $tag
+          Write-Host "========================="
