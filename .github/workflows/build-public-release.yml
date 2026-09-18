@@ -1,0 +1,123 @@
+name: Build Public Release
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python build dependencies
+        shell: powershell
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller hidapi
+
+      - name: Build Bridge EXE
+        shell: powershell
+        run: |
+          python -m PyInstaller `
+            --noconfirm `
+            --clean `
+            --onefile `
+            --console `
+            --name APEX5_FH6_Bridge `
+            --hidden-import=hid `
+            bridge_worker.py
+
+      - name: Build GUI EXE
+        shell: powershell
+        run: |
+          python -m PyInstaller `
+            --noconfirm `
+            --clean `
+            --onefile `
+            --noconsole `
+            --name APEX5_FH6_GUI `
+            apex5_gui.pyw
+
+      - name: Create release folder
+        shell: powershell
+        run: |
+          if (Test-Path release) {
+            Remove-Item release -Recurse -Force
+          }
+
+          New-Item -ItemType Directory -Path release | Out-Null
+          New-Item -ItemType Directory -Path release\profiles | Out-Null
+
+          Copy-Item dist\APEX5_FH6_GUI.exe release\
+          Copy-Item dist\APEX5_FH6_Bridge.exe release\
+
+          Copy-Item profiles\*.ini release\profiles\
+
+          Copy-Item README.md release\
+          Copy-Item VERSION.txt release\
+
+          Write-Host "Release contents:"
+          Get-ChildItem release -Recurse
+
+      - name: Install Inno Setup
+        shell: powershell
+        run: |
+          choco install innosetup -y --no-progress
+
+      - name: Build installer
+        shell: powershell
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+
+          if (!(Test-Path $iscc)) {
+            throw "Inno Setup compiler not found: $iscc"
+          }
+
+          & $iscc `
+            "/Q" `
+            "installer\APEX5_FH6_Bridge_Setup.iss"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Inno Setup build failed."
+          }
+
+          if (!(Test-Path "installer\APEX5_FH6_Bridge_Setup.exe")) {
+            throw "Installer was not created."
+          }
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: APEX5-FH6-Bridge-Windows
+          path: |
+            release/
+            installer/APEX5_FH6_Bridge_Setup.exe
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${env:GITHUB_REF_NAME}"
+
+          gh release create $tag `
+            "installer\APEX5_FH6_Bridge_Setup.exe" `
+            --title "APEX 5 FH6 Bridge $tag" `
+            --generate-notes `
+            --target main
