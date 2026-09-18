@@ -112,24 +112,40 @@ jobs:
             release/**
             installer/APEX5_FH6_Bridge_Setup.exe
 
-      - name: Publish GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
+            - name: Publish GitHub Release
         shell: powershell
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = "${env:GITHUB_REF_NAME}"
 
-          Write-Host "Creating release for tag: $tag"
+          Write-Host "Target release: $tag"
 
-          gh release create $tag `
-            "installer\APEX5_FH6_Bridge_Setup.exe" `
-            --title "APEX 5 FH6 Bridge $tag" `
-            --generate-notes `
-            --latest
+          gh release view $tag *> $null
 
-          if ($LASTEXITCODE -ne 0) {
-            throw "GitHub Release creation failed."
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Release already exists. Uploading installer..."
+
+            gh release upload $tag `
+              "installer\APEX5_FH6_Bridge_Setup.exe" `
+              --clobber
+
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to upload installer to existing release."
+            }
+          }
+          else {
+            Write-Host "Release does not exist. Creating release..."
+
+            gh release create $tag `
+              "installer\APEX5_FH6_Bridge_Setup.exe" `
+              --title "APEX 5 FH6 Bridge $tag" `
+              --generate-notes `
+              --latest
+
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to create GitHub release."
+            }
           }
 
-          Write-Host "Release created successfully."
+          Write-Host "Release operation completed successfully."
