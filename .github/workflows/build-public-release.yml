@@ -8,6 +8,12 @@ on:
       - "v*"
 
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to build/upload"
+        required: true
+        default: "v2.1.0"
+        type: string
 
 permissions:
   contents: write
@@ -25,7 +31,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
+      - name: Install Python dependencies
         shell: powershell
         run: |
           python -m pip install --upgrade pip
@@ -57,21 +63,21 @@ jobs:
       - name: Prepare release folder
         shell: powershell
         run: |
-          Remove-Item release -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item "release" -Recurse -Force -ErrorAction SilentlyContinue
 
-          New-Item -ItemType Directory -Path release | Out-Null
-          New-Item -ItemType Directory -Path release\profiles | Out-Null
+          New-Item -ItemType Directory -Path "release" | Out-Null
+          New-Item -ItemType Directory -Path "release\profiles" | Out-Null
 
-          Copy-Item dist\APEX5_FH6_Bridge.exe release\
-          Copy-Item dist\APEX5_FH6_GUI.exe release\
+          Copy-Item "dist\APEX5_FH6_Bridge.exe" "release\"
+          Copy-Item "dist\APEX5_FH6_GUI.exe" "release\"
 
-          Copy-Item profiles\*.ini release\profiles\
+          Copy-Item "profiles\*.ini" "release\profiles\"
 
-          Copy-Item README.md release\
-          Copy-Item VERSION.txt release\
+          Copy-Item "README.md" "release\"
+          Copy-Item "VERSION.txt" "release\"
 
           Write-Host "===== RELEASE CONTENTS ====="
-          Get-ChildItem release -Recurse
+          Get-ChildItem "release" -Recurse
           Write-Host "============================"
 
       - name: Install Inno Setup
@@ -79,16 +85,16 @@ jobs:
         run: |
           choco install innosetup -y --no-progress
 
-      - name: Build installer
+      - name: Build Installer
         shell: powershell
         run: |
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
 
           if (!(Test-Path $iscc)) {
-            throw "Inno Setup compiler not found."
+            throw "Inno Setup compiler not found: $iscc"
           }
 
-          & $iscc /Q installer\APEX5_FH6_Bridge_Setup.iss
+          & $iscc /Q "installer\APEX5_FH6_Bridge_Setup.iss"
 
           if ($LASTEXITCODE -ne 0) {
             throw "Inno Setup build failed."
@@ -97,13 +103,14 @@ jobs:
           $installer = "installer\APEX5_FH6_Bridge_Setup.exe"
 
           if (!(Test-Path $installer)) {
-            throw "Installer was not created."
+            throw "Installer was not created: $installer"
           }
 
-          Write-Host "Installer created successfully:"
-          Get-Item $installer | Format-List FullName, Length
+          Write-Host "===== INSTALLER CREATED ====="
+          Get-Item $installer | Format-List FullName, Length, LastWriteTime
+          Write-Host "============================="
 
-      - name: Upload artifact
+      - name: Upload build artifact
         uses: actions/upload-artifact@v7
         with:
           name: APEX5-FH6-Bridge-Windows
@@ -112,33 +119,52 @@ jobs:
             release/**
             installer/APEX5_FH6_Bridge_Setup.exe
 
-            - name: Publish GitHub Release
+      - name: Determine release tag
+        id: release_tag
+        shell: powershell
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $tag = "${{ inputs.release_tag }}"
+          }
+          elseif ("${env:GITHUB_REF}" -like "refs/tags/v*") {
+            $tag = "${env:GITHUB_REF_NAME}"
+          }
+          else {
+            $tag = ""
+          }
+
+          "TAG=$tag" >> $env:GITHUB_OUTPUT
+          Write-Host "Target release tag: $tag"
+
+      - name: Publish GitHub Release
+        if: steps.release_tag.outputs.TAG != ''
         shell: powershell
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = "${env:GITHUB_REF_NAME}"
+          $tag = "${{ steps.release_tag.outputs.TAG }}"
+          $installer = "installer\APEX5_FH6_Bridge_Setup.exe"
 
           Write-Host "Target release: $tag"
 
           gh release view $tag *> $null
 
           if ($LASTEXITCODE -eq 0) {
-            Write-Host "Release already exists. Uploading installer..."
+            Write-Host "Release already exists."
+            Write-Host "Uploading installer..."
 
-            gh release upload $tag `
-              "installer\APEX5_FH6_Bridge_Setup.exe" `
-              --clobber
+            gh release upload $tag $installer --clobber
 
             if ($LASTEXITCODE -ne 0) {
               throw "Failed to upload installer to existing release."
             }
           }
           else {
-            Write-Host "Release does not exist. Creating release..."
+            Write-Host "Release does not exist."
+            Write-Host "Creating release..."
 
             gh release create $tag `
-              "installer\APEX5_FH6_Bridge_Setup.exe" `
+              $installer `
               --title "APEX 5 FH6 Bridge $tag" `
               --generate-notes `
               --latest
@@ -148,4 +174,6 @@ jobs:
             }
           }
 
-          Write-Host "Release operation completed successfully."
+          Write-Host "===== RELEASE SUCCESS ====="
+          gh release view $tag
+          Write-Host "==========================="
